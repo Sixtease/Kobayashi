@@ -1,0 +1,3 @@
+Kobayashi stands for Content-by-hash.
+The key functionality is managing the content loaded into your HTML document via AJAX based on the hash part of URL.
+Makes your life simpler than other AJAX history enabling libraries but limits you more as well.
