@@ -1,4 +1,4 @@
-KOBAYASHI_VERSION = '2009-07-07';
+KOBAYASHI_VERSION = '2009-07-20';
 
 // Debugging tools
 ;;; function alert_dump(obj, name) {
@@ -131,6 +131,9 @@ ContentByHashLib.LOADED_MEDIA = {};
         }
         PAGE_CHANGED++;
         $target.trigger('content_added', extras);
+        if ($.isFunction( extras.custom_success )) try {
+            extras.custom_success(extras.xhr);
+        } catch(e) { carp('Failed success callback (load_content)', e, extras) };
     }
     
     // argument is a LOAD_BUF item
@@ -140,6 +143,7 @@ ContentByHashLib.LOADED_MEDIA = {};
             return;
         }
         var $target = $('#'+info.target_id);
+        $target.text(gettext('Rendering error...'));
         var response_text = info.xhr.responseText;
         var $err_div = $('<div class="error-code"></div>')/*.append(
             $('<a>reload</a>').css({display:'block'}).click(function(){
@@ -217,7 +221,7 @@ ContentByHashLib.LOADED_MEDIA = {};
             return;
         }
         
-        inject_content($target, info.data, info.address, {xhr: info.xhr, by_hash: info.by_hash});
+        inject_content($target, info.data, info.address, info);
         
         // Check next request
         draw_ready();
@@ -277,10 +281,10 @@ ContentByHashLib.LOADED_MEDIA = {};
                 else {
                     LOAD_BUF[ this.load_id ].data = data;
                 }
+                if (this.custom_success) {
+                    LOAD_BUF[ this.load_id ].custom_success = this.custom_success;
+                }
                 draw_ready();
-                if (this.custom_success) try {
-                    this.custom_success();
-                } catch(e) { carp('Failed success callback (load_content)', e, this); }
             },
             error: function(xhr) {
                 LOAD_BUF[ this.load_id ].xhr = xhr;
@@ -289,7 +293,7 @@ ContentByHashLib.LOADED_MEDIA = {};
                 $(document).trigger('load_content_failed', [xhr]);
                 draw_ready();
                 if (this.custom_error) try {
-                    this.custom_error();
+                    this.custom_error(xhr);
                 } catch(e) { carp('Failed error callback (load_content)', e, this); }
             },
             load_id: load_id,
