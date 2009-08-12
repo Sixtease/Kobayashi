@@ -118,18 +118,45 @@ ContentByHashLib.LOADED_MEDIA = {};
             });
         }
         
-        $target.removeClass('loading').html(data);
-        if ($target.hasClass('js-noautoshow')) {} else $target.show();
-        $(document).trigger('dec_loading');
-        if (address != undefined) {
-            LOADED_URLS[ $target.attr('id') ] = address;
-            if (extras && extras.by_hash) URL_LOADED_BY_HASH[ $target.attr('id') ] = true;
+        var redirect_to;
+        if (redirect_to = extras.xhr.getResponseHeader('Redirect-To')) {
+            var arg = {};
+            for (k in extras) { arg[k] = extras[k]; }
+            delete arg.xhr;
+            var literal_address;
+            if (redirect_to.substr(0, BASE_PATH.length) == BASE_PATH) {
+                literal_address = redirect_to.substr(BASE_PATH.length);
+            }
+            else {
+                literal_address = redirect_to;
+            }
+            arg.address = literal_address;
+            arg.is_priority_request = true;
+            load_content(arg);
+            if ( extras.by_hash ) {
+                var literal_target_id = extras.target_id + '::';
+                if (extras.target_id == ContentByHashLib.DEFAULT_TARGET) {
+                    if (location.hash.indexOf('#'+extras.target_id+'::') < 0) {
+                        literal_target_id = '';
+                    }
+                }
+                adr(literal_target_id + literal_address, {just_set: true, nohistory: true});
+            }
         }
+        else {
+            $target.removeClass('loading').html(data);
+            if ( ! $target.hasClass('js-noautoshow') ) $target.show();
+            if (address != undefined) {
+                LOADED_URLS[ $target.attr('id') ] = address;
+                if (extras && extras.by_hash) URL_LOADED_BY_HASH[ $target.attr('id') ] = true;
+            }
+            if ($.isFunction( extras.success_callback )) try {
+                extras.success_callback.call(extras);
+            } catch(e) { carp('Failed success callback (load_content)', e, extras) };
+            $target.trigger('content_added', extras);
+        }
+        $(document).trigger('dec_loading');
         PAGE_CHANGED++;
-        $target.trigger('content_added', extras);
-        if ($.isFunction( extras.custom_success )) try {
-            extras.custom_success(extras.xhr);
-        } catch(e) { carp('Failed success callback (load_content)', e, extras) };
     }
     
     // argument is a LOAD_BUF item
@@ -185,6 +212,24 @@ ContentByHashLib.LOADED_MEDIA = {};
     }
     ContentByHashLib.inject_error_message = inject_error_message;
     
+    // get new index to LOAD_BUF (the request queue), either on its end (normal) or at the beginning (is_priority == true)
+    function alloc_loadbuf(is_priority) {
+        if (MIN_LOAD == undefined || MAX_LOAD+1 < MIN_LOAD) {
+            return (MIN_LOAD = ++MAX_LOAD);
+        }
+        if (is_priority) {
+            if (LOAD_BUF[MIN_LOAD] == undefined) return MIN_LOAD;
+            if (MIN_LOAD <= 0) {
+                carp(new Error('Cannot make a priority request when request queue is not empty before first request has been finished.'));
+                return ++MAX_LOAD;
+            }
+            return --MIN_LOAD;
+        }
+        else {
+            return ++MAX_LOAD;
+        }
+    }
+    
     // Check if the least present request has finished and if so, shift it
     // from the queue and render the results, and then call itself recursively.
     // This effectively renders all finished requests from the first up to the
@@ -212,6 +257,9 @@ ContentByHashLib.LOADED_MEDIA = {};
         var $target = $('#'+info.target_id);
         if ($target && $target.jquery && $target.length) {} else {
             carp('Could not find target element: #'+info.target_id);
+            if ($.isFunction(info.error_callback)) try {
+                info.error_callback.call(info);
+            } catch(e) { carp('Failed error callback (load_content)', e, info); }
             $(document).trigger('dec_loading');
             draw_ready();
             return;
@@ -239,6 +287,10 @@ ContentByHashLib.LOADED_MEDIA = {};
     function load_content(arg) {
         var target_id = arg.target_id;
         var address = arg.address;
+        if (target_id == undefined) {
+            carp('ERROR: ContentByHashLib.load_content must get target_id field in its argument.');
+            return;
+        }
         ;;; carp('loading '+address+' into #'+target_id);
         
         delete arg.xhr; // just in case there was one
@@ -259,8 +311,7 @@ ContentByHashLib.LOADED_MEDIA = {};
         
         var url = prepend_base_path_to(address);
         url = $('<a>').attr('href', url).get(0).href;
-        var load_id = ++MAX_LOAD;
-        if (MIN_LOAD == undefined || load_id < MIN_LOAD) MIN_LOAD = load_id;
+        var load_id = alloc_loadbuf(arg.is_priority_request);
         LOAD_BUF[ load_id ] = {
             target_id: target_id,
             address: address
@@ -269,33 +320,45 @@ ContentByHashLib.LOADED_MEDIA = {};
         $.ajax({
             url: url,
             type: 'GET',
-            success: function(data) {
-                LOAD_BUF[ this.load_id ].xhr = this;
+            complete: function(xhr) {
+                LOAD_BUF[ this.load_id ].xhr = xhr;
+                if (this.succeeded) {
+                    this._success(xhr);
+                }
+                else {
+                    this._error(xhr);
+                }
+            },
+            success: function() { this.succeeded = true;  },
+            error:   function() { this.succeeded = false; },
+            _success: function(xhr) {
                 if (this.request_no < MAX_REQUEST) {
                     cancel_request( this.load_id );
                 }
                 else {
-                    LOAD_BUF[ this.load_id ].data = data;
+                    LOAD_BUF[ this.load_id ].data = xhr.responseText;
                 }
-                if (this.custom_success) {
-                    LOAD_BUF[ this.load_id ].custom_success = this.custom_success;
+                if (this.success_callback) {
+                    LOAD_BUF[ this.load_id ].success_callback = this.success_callback;
+                }
+                if (this.error_callback) {
+                    LOAD_BUF[ this.load_id ].error_callback = this.error_callback;
                 }
                 draw_ready();
             },
-            error: function(xhr) {
-                LOAD_BUF[ this.load_id ].xhr = xhr;
+            _error: function(xhr) {
                 inject_error_message( LOAD_BUF[ this.load_id ] );
                 cancel_request( this.load_id );
                 $(document).trigger('load_content_failed', [xhr]);
                 draw_ready();
-                if (this.custom_error) try {
-                    this.custom_error(xhr);
+                if ($.isFunction(this.error_callback)) try {
+                    this.error_callback();
                 } catch(e) { carp('Failed error callback (load_content)', e, this); }
             },
             load_id: load_id,
             request_no: MAX_REQUEST,
-            custom_success: arg.success_callback,
-            custom_error: arg.error_callback,
+            success_callback: arg.success_callback,
+            error_callback: arg.error_callback,
             original_options: arg
         });
     }
@@ -483,7 +546,7 @@ ContentByHashLib.LOADED_MEDIA = {};
     }
     
     // Fire hashchange event when location.hash changes
-    var CURRENT_HASH = '';
+    window.CURRENT_HASH = '';
     $(document).bind('hashchange', function() {
 //        carp('hash: ' + location.hash);
         MAX_REQUEST++;
@@ -581,6 +644,19 @@ function adr(address, options) {
         return;
     }
     
+    function set_location_hash(newhash, options) {
+        if (newhash.charAt(0) != '#') newhash = '#' + newhash;
+        if (options.just_set) {
+            CURRENT_HASH = newhash;
+        }
+        if (options.nohistory) {
+            location.replace( newhash );
+        }
+        else {
+            location.hash = newhash;
+        }
+    }
+    
     // '#' chars in the address separate invividual requests for hash modification.
     // First deal with the first one and then recurse on the subsequent ones.
     if (address.charAt(0) == '#') address = address.substr(1);
@@ -623,7 +699,7 @@ function adr(address, options) {
         if (options.just_get == 'address') return address;
         if (options.just_get == 'hash')    return newhash;
         else {
-            location.hash = newhash;
+            set_location_hash(newhash, options);
             return;
         }
     }
@@ -750,7 +826,7 @@ function adr(address, options) {
         return newhash;
     }
     else {
-        location.hash = newhash;
+        set_location_hash(newhash, options);
     }
 }
 // returns address for use in hash, i.e. without BASE_PATH
